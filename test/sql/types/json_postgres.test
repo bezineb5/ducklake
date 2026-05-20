@@ -1,0 +1,107 @@
+# name: test/sql/types/json_postgres.test
+# description: test JSON type handling with PostgreSQL catalog
+# group: [types]
+
+require ducklake
+
+require parquet
+
+require postgres_scanner
+
+#FIXME: ADD THIS TO PG CI WHEN IT GETS BACK
+require-env DUCKLAKE_CI
+
+test-env DUCKLAKE_CONNECTION __TEST_DIR__/{UUID}.db
+
+test-env DATA_PATH __TEST_DIR__
+
+statement ok
+ATTACH 'ducklake:${DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '${DATA_PATH}/json_postgres_files', DATA_INLINING_ROW_LIMIT 10)
+
+# Test creating a table with JSON column
+statement ok
+CREATE TABLE ducklake.test_json(id INTEGER, json_col JSON);
+
+# Test inserting JSON data
+statement ok
+INSERT INTO ducklake.test_json VALUES (1, '{"key": "value", "number": 42}');
+
+statement ok
+INSERT INTO ducklake.test_json VALUES (2, '{"nested": {"a": 1, "b": 2}, "array": [1, 2, 3]}');
+
+# Test querying JSON data
+query II
+SELECT id, json_col FROM ducklake.test_json ORDER BY id;
+----
+1	{"key": "value", "number": 42}
+2	{"nested": {"a": 1, "b": 2}, "array": [1, 2, 3]}
+
+# Test querying with JSON functions
+query II
+SELECT id, json_col->'key' AS key_value FROM ducklake.test_json WHERE id = 1;
+----
+1	"value"
+
+# Test type checking
+query II
+SELECT typeof(json_col) FROM ducklake.test_json LIMIT 1;
+----
+JSON
+
+# Test reading back after reconnection
+statement ok
+DETACH ducklake;
+
+statement ok
+ATTACH 'ducklake:${DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '${DATA_PATH}/json_postgres_files', DATA_INLINING_ROW_LIMIT 10)
+
+query II
+SELECT id, json_col FROM ducklake.test_json ORDER BY id;
+----
+1	{"key": "value", "number": 42}
+2	{"nested": {"a": 1, "b": 2}, "array": [1, 2, 3]}
+
+# Test with inlined data (small table should be inlined)
+statement ok
+CREATE TABLE ducklake.test_json_inlined(id INTEGER, json_col JSON);
+
+statement ok
+INSERT INTO ducklake.test_json_inlined VALUES (1, '{"test": "inlined"}');
+
+query I
+SELECT id, json_col FROM ducklake.test_json_inlined;
+----
+1	{"test": "inlined"}
+
+# Verify the data is correctly stored and retrieved
+query I
+SELECT typeof(json_col) FROM ducklake.test_json_inlined;
+----
+JSON
+
+# Verify that JSON data is inlined (stored in metadata, not in parquet files)
+# Since we have a small table with inlining enabled, data should be inlined
+query I
+SELECT COUNT(*) FROM GLOB('${DATA_PATH}/json_postgres_files/**/*.parquet')
+----
+0
+
+# Test with multiple rows to trigger inlining
+statement ok
+CREATE TABLE ducklake.test_json_multi(id INTEGER, json_col JSON);
+
+statement ok
+INSERT INTO ducklake.test_json_multi VALUES (1, '{"a": 1}'), (2, '{"b": 2}'), (3, '{"c": 3}');
+
+query III
+SELECT id, json_col FROM ducklake.test_json_multi ORDER BY id;
+----
+1	{"a": 1}
+2	{"b": 2}
+3	{"c": 3}
+
+# Verify all data is inlined
+query I
+SELECT COUNT(*) FROM GLOB('${DATA_PATH}/json_postgres_files/**/*.parquet')
+----
+0
