@@ -11,6 +11,10 @@ PostgresMetadataManager::PostgresMetadataManager(DuckLakeTransaction &transactio
 }
 
 bool PostgresMetadataManager::TypeIsNativelySupported(const LogicalType &type) {
+	// JSON type is stored as BYTEA in PostgreSQL to avoid encoding issues
+	if (type.IsJSONType()) {
+		return false;
+	}
 	switch (type.id()) {
 	// Unnamed composite types are not supported.
 	case LogicalTypeId::STRUCT:
@@ -48,6 +52,10 @@ bool PostgresMetadataManager::SupportsInlining(const LogicalType &type) {
 }
 
 string PostgresMetadataManager::GetColumnTypeInternal(const LogicalType &column_type) {
+	// JSON type is stored as BYTEA in PostgreSQL to avoid encoding issues
+	if (column_type.IsJSONType()) {
+		return "BYTEA";
+	}
 	switch (column_type.id()) {
 	case LogicalTypeId::DOUBLE:
 		return "DOUBLE PRECISION";
@@ -129,7 +137,7 @@ string PostgresMetadataManager::GetLatestSnapshotQuery() const {
 	)";
 }
 
-// We need a specialized function here to do a reinterpret for postgres from BLOB to VARCHAR
+// We need a specialized function here to do a reinterpret for postgres from BLOB to VARCHAR/JSON
 shared_ptr<DuckLakeInlinedData>
 PostgresMetadataManager::TransformInlinedData(QueryResult &result, const vector<LogicalType> &expected_types) {
 	bool needs_reinterpret = false;
@@ -138,7 +146,7 @@ PostgresMetadataManager::TransformInlinedData(QueryResult &result, const vector<
 		for (idx_t i = 0; i < expected_types.size(); i++) {
 			if (result.types[i] != expected_types[i]) {
 				D_ASSERT(result.types[i].id() == LogicalTypeId::BLOB &&
-				         expected_types[i].id() == LogicalTypeId::VARCHAR);
+				         (expected_types[i].id() == LogicalTypeId::VARCHAR || expected_types[i].IsJSONType()));
 				needs_reinterpret = true;
 			}
 		}
